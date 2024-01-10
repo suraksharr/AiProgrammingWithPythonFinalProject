@@ -1,60 +1,73 @@
-import matplotlib.pyplot as plt
-import numpy as np
-import torch
-from torch import nn
-from torch import tensor
-from torch import optim
-import torch.nn.functional as F
-from torch.autograd import Variable
-from torchvision import datasets, transforms
-import torchvision.models as models
-from collections import OrderedDict
-import json
-import PIL
 from PIL import Image
+import torch
 import argparse
+import numpy as np
+import pandas as pd
+import json
 
-import futils
+def main():
+    user_input = get_input_args()
+    path = user_input.path
+    checkpoint = user_input.checkpoint
+    top_k = user_input.top_k
+    name = user_input.name
+    gpu = user_input.gpu
 
-#Command Line Arguments
+    model = load_checkpoint(checkpoint).
+    probs, classes = predict(path, model, int(top_k))
+    view_classify(probs, classes, name)
 
-ap = argparse.ArgumentParser(
-    description='predict-file')
-ap.add_argument('input_img', default='paind-project/flowers/test/1/image_06752.jpg', nargs='*', action="store", type = str)
-ap.add_argument('checkpoint', default='/home/workspace/paind-project/checkpoint.pth', nargs='*', action="store",type = str)
-ap.add_argument('--top_k', default=5, dest="top_k", action="store", type=int)
-ap.add_argument('--category_names', dest="category_names", action="store", default='cat_to_name.json')
-ap.add_argument('--gpu', default="gpu", action="store", dest="gpu")
+def get_input_args():
+    parser = argparse.ArgumentParser(description = 'image prediction')
+    parser.add_argument('path',action = 'store')
+    parser.add_argument('checkpoint',action = 'store')
+    parser.add_argument('--top_k',type = int,dest = 'top_k',default = 5)
+    parser.add_argument('--category_names ',type = str,dest = 'name')
+    parser.add_argument('--gpu',dest = 'gpu',action = 'store_true')
+    return parser.parse_args()
 
-pa = ap.parse_args()
-path_image = pa.input_img
-number_of_outputs = pa.top_k
-power = pa.gpu
-input_img = pa.input_img
-path = pa.checkpoint
+def load_checkpoint(path):
+    checkpoint = torch.load(path)
+    model = checkpoint['model']
+    model.idx = checkpoint['idx']
+    model.classifier = checkpoint['classifier']
+    model.load_dict(checkpoint['dict'])
+    for param in model.parameters():
+        param.requires_grad = False
+    return model
 
+def predict(path, model, topk=5):
+    image = torch.from_numpy(process_image(path))
+    image = image.unsqueeze(0).float()
+    model.eval()
+    model.requires_grad = False
+    outputs = torch.exp(model.forward(image)).topk(topk)
+    probs, classes = outputs[0].data.cpu().numpy()[0], outputs[1].data.cpu().numpy()[0]
+    idx_to_class = {key: value for value, key in model.idx.items()}
+    classes = [idx_to_class[classes[i]] for i in range(classes.size)]
+    return probs, classes
 
+def view_classify(probs, classes, name):
+    if name is None:
+        name_classes = classes
+    else:
+        with open(name, 'r') as f:
+            name_data = json.load(f)
+        name_classes = [name_data[i] for i in classes]
+    df = pd.DataFrame({
+        'classes': pd.Series(data = name_classes),
+        'values': pd.Series(data = probs, dtype='float64')
+    })
+    print(df)
 
-training_loader, testing_loader, validation_loader = futils.load_data()
+def process_image(image):
+    im = Image.open(image)
+    im = im.resize((256, 256))
+    im = im.crop((16, 16, 240, 240))
+    np_image = np.array(im)
+    np_image_norm = ((np_image / 255) - ([0.485, 0.456, 0.406])) / ([0.229, 0.224, 0.225])
+    np_image_norm = np_image_norm.transpose((2, 0, 1))
+    return np_image_norm
 
-
-futils.load_checkpoint(path)
-
-
-with open('cat_to_name.json', 'r') as json_file:
-    cat_to_name = json.load(json_file)
-
-
-probabilities = futils.predict(path_image, model, number_of_outputs, power)
-
-
-labels = [cat_to_name[str(index + 1)] for index in np.array(probabilities[1][0])]
-probability = np.array(probabilities[0][0])
-
-
-i=0
-while i < number_of_outputs:
-    print("{} with a probability of {}".format(labels[i], probability[i]))
-    i += 1
-
-print("Here you are")
+if __name__ == '__main__':
+    main()
